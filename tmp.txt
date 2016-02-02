@@ -1,0 +1,88 @@
+package de.siteos.ortungssteuerung.business;
+
+import io.vertx.core.AbstractVerticle;
+import io.vertx.core.Future;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpServerRequest;
+import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.web.Router;
+import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.handler.BodyHandler;
+import org.elasticsearch.client.Requests;
+import org.elasticsearch.client.transport.TransportClient;
+import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.transport.InetSocketTransportAddress;
+
+import java.io.IOException;
+import java.net.UnknownHostException;
+import java.util.HashMap;
+import java.util.Map;
+
+import static io.vertx.core.logging.LoggerFactory.getLogger;
+import static java.net.InetAddress.getByName;
+import static org.elasticsearch.client.Requests.getRequest;
+import static org.elasticsearch.client.Requests.searchRequest;
+import static org.elasticsearch.common.settings.Settings.settingsBuilder;
+
+public class MyRestVerticle extends AbstractVerticle {
+
+    private Map<String, JsonObject> tkms = new HashMap<>();
+    private TransportClient client;
+
+    @Override
+    public void start(Future<Void> future) throws IOException {
+
+        setUpInitialData();
+
+      //  vertx.deployVerticle(ElasticsearchVerticle.class.getName(), event -> System.out.println("Elasticsearch completed"));
+        setupElasticsearchClient();
+
+        Router router = Router.router(vertx);
+        router.route().handler(BodyHandler.create());
+
+        router.get("/list/events").handler(this::handleGetTkm);
+
+        Integer httpPort = config().getInteger("http.port", 8080);
+        vertx.createHttpServer().requestHandler(router::accept).listen(httpPort, event -> future.complete());
+        getLogger(this.getClass()).info("Listening http on " + httpPort);
+    }
+
+    private void setupElasticsearchClient() throws UnknownHostException {
+        Settings settings = settingsBuilder()
+                .put("cluster.name","zentrale").build();
+        client = TransportClient.builder().settings(settings).build()
+                .addTransportAddress(new InetSocketTransportAddress(
+                        getByName("localhost"), 9300));
+    }
+
+    private void handleGetTkm(RoutingContext routingContext) {
+
+
+        HttpServerRequest request = routingContext.request();
+
+        vertx.executeBlocking(event -> {
+            String date = request.getParam("date");
+            String name = request.getParam("name");
+            String interval = request.getParam("interval");
+            String agg = request.getParam("agg");
+            String from = request.getParam("from");
+            String to = request.getParam("to");
+
+            JsonArray arr = new JsonArray();
+           // tkms.forEach((k, v) -> arr.add(v));
+
+            //DB-ZUGRIFF
+           client.search(searchRequest("treffer-zentrale")).actionGet().getHits().forEach(hit -> arr.add(hit.getSourceAsString()));
+
+            //TODO FILEUPLOAD über FormUpload
+
+            event.complete(arr.encodePrettily());
+        }, result -> {
+            routingContext.response().putHeader("content-type", "application/json").end((String) result.result());
+            result.succeeded();
+        });
+    }
+
+}
